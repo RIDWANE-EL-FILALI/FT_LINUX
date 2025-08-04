@@ -2,29 +2,72 @@
 
 JSON_FILE=$1
 
-# get two versions sort them in ascending order then compare it with the least version requested 
+if [[ -z "$JSON_FILE" ]]; then
+  echo "Usage: $0 <json_file>"
+  exit 1
+fi
+
+# Compare versions: true if $1 >= $2
 function Compare_Versions()
 {
-    [["$(printf '%s\n%s' "$1" "$2" | sort -V | head -n1)" == "$2"]]
+    [[ "$(printf '%s\n%s' "$1" "$2" | sort -V | head -n1)" == "$2" ]]
 }
 
-
-# functions get the current version for each tool requested and returns it
+# Get current version of a tool
 function get_current_version()
 {
+    if [[ "$1" == "kernel" ]]; then
+        uname -r | grep -oE '^[0-9]+(\.[0-9]+)+'
+        return
+    fi
+
     if command -v "$1" >/dev/null 2>&1; then
-        version=$("$1" --version | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1)
+        version=$("$1" --version 2>&1 | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1)
         echo "$version"
     else
         echo "NOT INSTALLED !"
     fi
 }
 
-# Lopp throught the json file and check versions properly 
-tools=($(jq -r 'keys_unsorted[]' "$JSON_FILE"))
+# Extract tools and kernel objects correctly from JSON array
+tools_obj=$(jq -r '.[0]' "$JSON_FILE")
+kernel_obj=$(jq -r '.[1]' "$JSON_FILE")
+
+# Extract kernel key and expected version
+kernel_key=$(echo "$kernel_obj" | jq -r 'keys_unsorted[0]')
+expected_kernel_version=$(echo "$kernel_obj" | jq -r '.[]')
+
+# Check kernel version first
+current_kernel_version=$(get_current_version "$kernel_key")
+
+echo "Checking kernel version..."
+if [[ "$current_kernel_version" == "NOT INSTALLED !" ]]; then
+    printf "%-15s : \e[31mNOT INSTALLED !\e[0m ❌\n" "$kernel_key"
+elif Compare_Versions "$expected_kernel_version" "$current_kernel_version"; then
+    printf "\e[1;32m%-15s\e[0m | Expected: \e[32m%-10s\e[0m | Current: \e[32m%s\e[0m ❌\n" \
+        "$kernel_key" "$expected_kernel_version" "$current_kernel_version"
+else
+    printf "\e[1;33m%-15s\e[0m | Expected: \e[33m%-10s\e[0m | Current: \e[31m%s\e[0m ✅\n" \
+        "$kernel_key" "$expected_kernel_version" "$current_kernel_version"
+fi
+echo "----------------------------"
+
+# Loop through tools keys
+tools=($(echo "$tools_obj" | jq -r 'keys_unsorted[]'))
+
 for tool in "${tools[@]}"; do
-    name=$tool
-    expected_version=$(jq -r --arg key "$tool" '.[$key]' "$JSON_FILE")
-    current_version_on_machine="$(get_current_version $tool)"
-    printf "\e[1:32m${tool}\e[0m - \e[33m${expected_version}\e[0m - \e[33m${current_version_on_machine}\e[0m\n"
+    expected_version=$(echo "$tools_obj" | jq -r --arg key "$tool" '.[$key]')
+    current_version="$(get_current_version "$tool")"
+
+    if [[ "$current_version" == "NOT INSTALLED !" ]]; then
+        printf "%-15s : \e[31mNOT INSTALLED !\e[0m ❌\n" "$tool"
+    else
+        if Compare_Versions "$expected_version" "$current_version"; then
+            printf "\e[1;32m%-15s\e[0m | Expected: \e[32m%-10s\e[0m | Current: \e[32m%s\e[0m ❌\n" \
+                "$tool" "$expected_version" "$current_version"
+        else
+            printf "\e[1;33m%-15s\e[0m | Expected: \e[33m%-10s\e[0m | Current: \e[31m%s\e[0m ✅\n" \
+                "$tool" "$expected_version" "$current_version"
+        fi
+    fi
 done
